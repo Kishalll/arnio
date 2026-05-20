@@ -1,4 +1,10 @@
-"""Tests for write_parquet functionality."""
+"""Tests for write_parquet functionality.
+
+Tests that require pyarrow are marked with @pytest.mark.parquet and are
+skipped when pyarrow is not installed.  The ImportError contract test
+(test_missing_pyarrow_raises_import_error) runs unconditionally because
+it mocks the import and does not need pyarrow to be present.
+"""
 
 from __future__ import annotations
 
@@ -10,9 +16,26 @@ import pytest
 
 import arnio as ar
 
-pyarrow = pytest.importorskip("pyarrow", reason="pyarrow not installed")
+# Marker used to skip tests that actually call write_parquet with pyarrow.
+# Applied per-class/test so the ImportError contract test is never skipped.
+pyarrow_required = pytest.mark.skipif(
+    pytest.importorskip("pyarrow", reason="pyarrow not installed") is None,
+    reason="pyarrow not installed",
+)
+
+try:
+    import pyarrow  # noqa: F401
+
+    HAS_PYARROW = True
+except ImportError:
+    HAS_PYARROW = False
+
+skip_without_pyarrow = pytest.mark.skipif(
+    not HAS_PYARROW, reason="pyarrow not installed — install arnio[parquet]"
+)
 
 
+@skip_without_pyarrow
 class TestWriteParquetBasic:
     def test_basic_write_creates_file(self, tmp_path):
         frame = ar.from_pandas(pd.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]}))
@@ -42,6 +65,7 @@ class TestWriteParquetBasic:
         assert result is None
 
 
+@skip_without_pyarrow
 class TestWriteParquetRoundTrip:
     def test_integer_column_round_trips(self, tmp_path):
         frame = ar.from_pandas(pd.DataFrame({"n": [1, 2, 3]}))
@@ -107,8 +131,9 @@ class TestWriteParquetRoundTrip:
         assert roundtrip_df["y"].tolist() == arnio_df["y"].tolist()
 
 
+@skip_without_pyarrow
 class TestWriteParquetCompression:
-    @pytest.mark.parametrize("codec", ["snappy", "gzip", "zstd", "none"])
+    @pytest.mark.parametrize("codec", ["snappy", "gzip", "brotli", "zstd", "none"])
     def test_compression_codecs_accepted(self, tmp_path, codec):
         frame = ar.from_pandas(pd.DataFrame({"v": [1, 2, 3]}))
         out = tmp_path / f"out_{codec}.parquet"
@@ -121,7 +146,6 @@ class TestWriteParquetCompression:
         frame = ar.from_pandas(pd.DataFrame({"v": [1]}))
         out = tmp_path / "out.parquet"
         ar.write_parquet(frame, out)
-        # File should be readable — snappy is the default
         df = pd.read_parquet(out, engine="pyarrow")
         assert df["v"].tolist() == [1]
 
@@ -131,6 +155,7 @@ class TestWriteParquetCompression:
             ar.write_parquet(frame, tmp_path / "out.parquet", compression="lz4")
 
 
+@skip_without_pyarrow
 class TestWriteParquetRowGroupSize:
     def test_row_group_size_accepted(self, tmp_path):
         frame = ar.from_pandas(pd.DataFrame({"v": list(range(100))}))
@@ -162,6 +187,8 @@ class TestWriteParquetRowGroupSize:
 
 
 class TestWriteParquetErrors:
+    """Error-path tests that run regardless of whether pyarrow is installed."""
+
     def test_unsupported_extension_raises(self, tmp_path):
         frame = ar.from_pandas(pd.DataFrame({"a": [1]}))
         with pytest.raises(ValueError, match="Unsupported file format"):
@@ -172,7 +199,14 @@ class TestWriteParquetErrors:
         with pytest.raises(ValueError, match="Unsupported file format"):
             ar.write_parquet(frame, tmp_path / "out.json")
 
+    def test_unknown_compression_raises_without_pyarrow(self, tmp_path):
+        # Validation happens before the pyarrow import check.
+        frame = ar.from_pandas(pd.DataFrame({"a": [1]}))
+        with pytest.raises(ValueError, match="Unknown compression codec"):
+            ar.write_parquet(frame, tmp_path / "out.parquet", compression="lz4")
+
     def test_missing_pyarrow_raises_import_error(self, tmp_path):
+        # This test mocks pyarrow away and must run even without pyarrow.
         frame = ar.from_pandas(pd.DataFrame({"a": [1]}))
         with patch.dict("sys.modules", {"pyarrow": None}):
             with pytest.raises(ImportError, match="pip install arnio\\[parquet\\]"):

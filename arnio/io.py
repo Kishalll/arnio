@@ -1029,14 +1029,6 @@ def write_parquet(
     >>> ar.write_parquet(frame, "output.pq", compression="zstd")
     >>> ar.write_parquet(frame, "output.parquet", row_group_size=50_000)
     """
-    try:
-        import pyarrow  # noqa: F401 — presence check only
-    except ImportError as exc:
-        raise ImportError(
-            "pyarrow is required for Parquet export. "
-            "Install it with: pip install arnio[parquet]"
-        ) from exc
-
     from .convert import to_pandas
 
     path = os.fspath(path)
@@ -1058,6 +1050,14 @@ def write_parquet(
             raise TypeError("row_group_size must be an integer")
         if row_group_size <= 0:
             raise ValueError("row_group_size must be a positive integer")
+
+    try:
+        import pyarrow  # noqa: F401 — presence check only
+    except ImportError as exc:
+        raise ImportError(
+            "pyarrow is required for Parquet export. "
+            "Install it with: pip install arnio[parquet]"
+        ) from exc
 
     df = to_pandas(frame)
 

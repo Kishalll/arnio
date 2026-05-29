@@ -4,11 +4,9 @@ on:
   push:
     paths:
       - 'pyproject.toml'
-      - '.github/workflows/dependency-audit.yml'
   pull_request:
     paths:
       - 'pyproject.toml'
-      - '.github/workflows/dependency-audit.yml'
   schedule:
     - cron: '0 6 * * 1' # Weekly Monday morning run
 
@@ -20,10 +18,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           cache: 'pip'

@@ -156,5 +156,5 @@ class TestUnregisterStepBuiltinAlias:
         from arnio.exceptions import UnknownStepError
 
         for step_name in list(_BUILTIN_PYTHON_STEP_REGISTRY):
-            with pytest.raises(UnknownStepError):
-                unregister_step(step_name)
+            with pytest.raises(ValueError):
+              unregister_step(step_name)

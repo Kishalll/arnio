@@ -133,4 +133,3 @@ tests.forEach(function (t, i) {
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed.');
 if (failed > 0) process.exit(1);
-

@@ -230,8 +230,8 @@ def unregister_step(name: str) -> None:
         if name in _BUILTIN_PYTHON_STEP_REGISTRY:
             available_steps = sorted(set(_STEP_REGISTRY) | set(_PYTHON_STEP_REGISTRY))
             raise ValueError(
-    f"Cannot unregister built-in step '{name}'. Only custom user-registered steps can be unregistered."
-)
+                f"Cannot unregister built-in step '{name}'. Only custom user-registered steps can be unregistered."
+            )
         del _PYTHON_STEP_REGISTRY[name]
 
 

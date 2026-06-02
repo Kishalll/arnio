@@ -396,6 +396,15 @@ class DataQualityReport:
                 "Unknown exclude_columns: "
                 f"{unknown_exclude_columns}. Available columns: {available_columns}"
             )
+        def score_breakdown(self) -> dict[str, float]:
+            return {
+            "null_penalty": self.score_components.get("null_penalty", 0.0),
+            "duplicate_penalty": self.score_components.get("duplicate_penalty", 0.0),
+            "dtype_mismatch_penalty": self.score_components.get(
+                "dtype_mismatch_penalty", 0.0
+            ),
+            "final_score": self.quality_score,
+        }
 
         def _redact_reason(reason: str | None) -> str | None:
             if not reason or not exclude_columns:

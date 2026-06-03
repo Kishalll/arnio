@@ -513,6 +513,7 @@ def _materialize_csv_input(
     """
     if isinstance(source, (str, os.PathLike)):
         raw = os.fspath(source)
+        is_temp = False
 
         # Only inspect scheme for plain strings — PathLike objects are
         # always local filesystem paths.
@@ -530,15 +531,59 @@ def _materialize_csv_input(
 
             # HTTP/HTTPS — fetch via stdlib urllib, no new dependencies.
             if scheme in _SUPPORTED_URL_SCHEMES:
-                tmp_path = _fetch_url_to_tempfile(raw)
-                return tmp_path, True, True
+                raw = _fetch_url_to_tempfile(raw)
+                is_temp = True
+
+        is_gz = False
+        if isinstance(source, str) and source.lower().endswith(".gz"):
+            is_gz = True
+        elif not isinstance(source, str) and raw.lower().endswith(".gz"):
+            is_gz = True
+
+        if is_gz:
+            import gzip
+
+            tmp = tempfile.NamedTemporaryFile(
+                mode="wb",
+                suffix=".csv",
+                delete=False,
+            )
+            try:
+                with gzip.open(raw, "rb") as gz_file:
+                    shutil.copyfileobj(gz_file, tmp, length=_FILE_LIKE_COPY_CHUNK_SIZE)
+                tmp.close()
+                if is_temp:
+                    try:
+                        os.unlink(raw)
+                    except OSError:
+                        pass
+                return tmp.name, True, False
+            except Exception:
+                try:
+                    tmp.close()
+                except OSError:
+                    pass
+                try:
+                    os.unlink(tmp.name)
+                except OSError:
+                    pass
+                if is_temp:
+                    try:
+                        os.unlink(raw)
+                    except OSError:
+                        pass
+                raise
+
+        # If it was an HTTP fetch but not a .gz, it's materialized text
+        if is_temp:
+            return raw, True, True
 
         return raw, False, False
 
     if isinstance(source, io.StringIO) or (
         hasattr(source, "read") and callable(source.read)
     ):
-        tmp = tempfile.NamedTemporaryFile(
+        text_tmp = tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
             suffix=".csv",
@@ -554,16 +599,16 @@ def _materialize_csv_input(
                     raise TypeError(
                         "read_csv file-like objects must return text, not bytes"
                     )
-                tmp.write(chunk)
-            tmp.close()
-            return tmp.name, True, True
+                text_tmp.write(chunk)
+            text_tmp.close()
+            return text_tmp.name, True, True
         except Exception:
             try:
-                tmp.close()
+                text_tmp.close()
             except OSError:
                 pass
             try:
-                os.unlink(tmp.name)
+                os.unlink(text_tmp.name)
             except OSError:
                 pass
             raise
@@ -648,7 +693,8 @@ def read_csv(
     ----------
     path : str or file-like object
         Filesystem path or text file-like object containing CSV data.
-        Any file extension is accepted. For ``.tsv`` files, the delimiter
+        Any file extension is accepted, including compressed ``.csv.gz`` files.
+        For ``.tsv`` files, the delimiter
         is automatically set to ``'\t'`` when ``delimiter`` is omitted.
     delimiter : str or None, default None
         Field delimiter character.  When ``None`` (the default) the
@@ -754,12 +800,13 @@ def read_csv(
     >>> df = ar.read_csv("data.tsv", delimiter=",")  # explicit comma honoured
     >>> df = ar.read_csv("data.dat")              # non-standard extension accepted
     """
-    path, should_cleanup, is_materialized_text = _materialize_csv_input(path)
+    native_path, should_cleanup, is_materialized_text = _materialize_csv_input(path)
 
     try:
-        _validate_csv_path(path, encoding)
+        # Explicitly validate the decompressed temp file (or local path) rather than the compressed bytes
+        _validate_csv_path(native_path, encoding)
 
-        path_lower = path.lower()
+        path_lower = native_path.lower()
 
         # Resolve the sentinel: auto-detect tab for .tsv only when the caller
         # truly omitted delimiter (None).  An explicit delimiter="," is always
@@ -798,19 +845,19 @@ def read_csv(
 
         reader = _CsvReader(config)
     except Exception:
-        if should_cleanup and os.path.exists(path):
-            os.unlink(path)
+        if should_cleanup and os.path.exists(native_path):
+            os.unlink(native_path)
         raise
 
     try:
         effective_encoding = "utf-8" if is_materialized_text else encoding
         with _utf8_csv_path(
-            path,
+            native_path,
             effective_encoding,
             encoding_errors=encoding_errors,
             delimiter=delimiter,
-        ) as native_path:
-            cpp_frame, bad_rows = reader.read(native_path, on_bad_lines)
+        ) as native_csv_path:
+            cpp_frame, bad_rows = reader.read(native_csv_path, on_bad_lines)
 
         # on_bad_lines == "error" will raise RuntimeError then converted to CsvReadError as before
         if on_bad_lines == "warn" and bad_rows:
@@ -826,8 +873,8 @@ def read_csv(
         raise CsvReadError(str(e)) from None
 
     finally:
-        if should_cleanup and os.path.exists(path):
-            os.unlink(path)
+        if should_cleanup and os.path.exists(native_path):
+            os.unlink(native_path)
 
 
 def read_csv_chunked(
@@ -857,7 +904,7 @@ def read_csv_chunked(
     Parameters
     ----------
     path : str or file-like object
-        Path to the CSV file. Supports .csv, .txt, and .tsv extensions.
+        Path to the CSV file. Supports .csv, .txt, .tsv, and compressed .csv.gz extensions.
         Text file-like objects are copied to a temporary file in bounded
         chunks before native parsing.  For ``.tsv`` paths the delimiter is
         automatically set to ``'\\t'`` when ``delimiter`` is omitted.
@@ -938,23 +985,33 @@ def read_csv_chunked(
     ...     process(chunk)
     """
     is_path_input = isinstance(path, (str, os.PathLike))
-    path, should_cleanup, is_materialized_text = _materialize_csv_input(
+    native_path, should_cleanup, is_materialized_text = _materialize_csv_input(
         path, caller="read_csv_chunked"
     )
     try:
-        path_lower = path.lower()
+        path_lower = native_path.lower()
         if is_path_input:
+            # We check the original path extension if it was passed as a path
+            if isinstance(path, str):
+                orig_path_lower = path.lower()
+            elif isinstance(path, os.PathLike):
+                orig_path_lower = os.fspath(path).lower()
+            else:
+                orig_path_lower = ""
+
             if not (
-                path_lower.endswith(".csv")
-                or path_lower.endswith(".txt")
-                or path_lower.endswith(".tsv")
+                orig_path_lower.endswith(".csv")
+                or orig_path_lower.endswith(".txt")
+                or orig_path_lower.endswith(".tsv")
+                or orig_path_lower.endswith(".gz")
             ):
                 raise ValueError(
                     f"Unsupported file format: {path}. "
-                    "Only .csv, .txt, and .tsv are supported."
+                    "Only .csv, .txt, .tsv, and compressed .csv.gz are supported."
                 )
 
-        _validate_csv_path(path, encoding, reject_utf8_nul_bytes=False)
+        # Explicitly validate the decompressed temp file (or local path) rather than the compressed bytes
+        _validate_csv_path(native_path, encoding, reject_utf8_nul_bytes=False)
 
         # Resolve the sentinel: auto-detect tab for .tsv only when the caller
         # truly omitted delimiter (None).  An explicit delimiter="," is always
@@ -1014,15 +1071,15 @@ def read_csv_chunked(
 
         reader = _CsvChunkReader(config)
     except Exception:
-        if should_cleanup and os.path.exists(path):
-            os.unlink(path)
+        if should_cleanup and os.path.exists(native_path):
+            os.unlink(native_path)
         raise
     try:
         effective_encoding = "utf-8" if is_materialized_text else encoding
         with _utf8_csv_path(
-            path, effective_encoding, delimiter=delimiter
-        ) as native_path:
-            reader.open(native_path)
+            native_path, effective_encoding, delimiter=delimiter
+        ) as native_csv_path:
+            reader.open(native_csv_path)
             yielded_nonempty_chunk = False
             while True:
                 chunk = reader.next_chunk(chunksize, on_bad_lines)
@@ -1049,8 +1106,8 @@ def read_csv_chunked(
         raise CsvReadError(str(e)) from None
     finally:
         reader.close()
-        if should_cleanup and os.path.exists(path):
-            os.unlink(path)
+        if should_cleanup and os.path.exists(native_path):
+            os.unlink(native_path)
 
 
 def write_csv(
@@ -1147,7 +1204,8 @@ def scan_csv(
     ----------
     path : str or file-like object
         Filesystem path or text file-like object containing CSV data.
-        Any file extension is accepted. For ``.tsv`` files, the delimiter
+        Any file extension is accepted, including compressed ``.csv.gz`` files.
+        For ``.tsv`` files, the delimiter
         is automatically set to ``'\t'`` when ``delimiter`` is omitted.
     delimiter : str or None, default None
         Field delimiter character.  When ``None`` (the default) the
@@ -1222,12 +1280,12 @@ def scan_csv(
     >>> schema = ar.scan_csv("data.dat")              # non-standard extension accepted
     """
 
-    path, should_cleanup, _ = _materialize_csv_input(path, caller="scan_csv")
+    native_path, should_cleanup, _ = _materialize_csv_input(path, caller="scan_csv")
 
     try:
-        _validate_csv_path(path, encoding, reject_utf8_nul_bytes=False)
+        _validate_csv_path(native_path, encoding, reject_utf8_nul_bytes=False)
 
-        path_lower = path.lower()
+        path_lower = native_path.lower()
 
         # Resolve the sentinel: auto-detect tab for .tsv only when the caller
         # truly omitted delimiter (None).  An explicit delimiter="," is always
@@ -1265,16 +1323,17 @@ def scan_csv(
 
         reader = _CsvReader(config)
         # Schema inference only needs a sample, avoiding full-file transcode.
+        # For scan_csv, if sample_rows is specified, we use that for sniffing the schema.
         # sample_rows is passed so _utf8_csv_path uses record-aware sampling
         # without rewriting decoded CSV text before native parsing.
         with _utf8_csv_path(
-            path,
+            native_path,
             encoding,
             encoding_errors=encoding_errors,
             delimiter=delimiter,
             sample_rows=100 if sample_size is None else sample_size,
-        ) as native_path:
-            schema, bad_row_msgs = reader.scan_schema(native_path, on_bad_lines)
+        ) as native_csv_path:
+            schema, bad_row_msgs = reader.scan_schema(native_csv_path, on_bad_lines)
             if on_bad_lines == "warn" and bad_row_msgs:
                 warnings.warn(
                     f"{len(bad_row_msgs)} malformed CSV row(s) skipped during schema inference:\n"
@@ -1286,9 +1345,9 @@ def scan_csv(
     except RuntimeError as e:
         raise CsvReadError(str(e)) from None
     finally:
-        if should_cleanup and os.path.exists(path):
+        if should_cleanup and os.path.exists(native_path):
             try:
-                os.unlink(path)
+                os.unlink(native_path)
             except OSError:
                 pass
 

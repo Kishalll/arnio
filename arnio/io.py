@@ -583,7 +583,7 @@ def _materialize_csv_input(
     if isinstance(source, io.StringIO) or (
         hasattr(source, "read") and callable(source.read)
     ):
-        tmp = tempfile.NamedTemporaryFile(
+        text_tmp = tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
             suffix=".csv",
@@ -599,16 +599,16 @@ def _materialize_csv_input(
                     raise TypeError(
                         "read_csv file-like objects must return text, not bytes"
                     )
-                tmp.write(chunk)
-            tmp.close()
-            return tmp.name, True, True
+                text_tmp.write(chunk)
+            text_tmp.close()
+            return text_tmp.name, True, True
         except Exception:
             try:
-                tmp.close()
+                text_tmp.close()
             except OSError:
                 pass
             try:
-                os.unlink(tmp.name)
+                os.unlink(text_tmp.name)
             except OSError:
                 pass
             raise
@@ -994,8 +994,10 @@ def read_csv_chunked(
             # We check the original path extension if it was passed as a path
             if isinstance(path, str):
                 orig_path_lower = path.lower()
-            else:
+            elif isinstance(path, os.PathLike):
                 orig_path_lower = os.fspath(path).lower()
+            else:
+                orig_path_lower = ""
 
             if not (
                 orig_path_lower.endswith(".csv")

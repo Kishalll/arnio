@@ -1,5 +1,5 @@
 """Tests for data quality profiling and smart cleaning."""
-from arnio.quality import DataQualityReport
+
 import io
 import json
 import math
@@ -11,6 +11,7 @@ import arnio as ar
 from arnio.quality import (
     QUALITY_REPORT_COLUMNS,
     CleaningSuggestion,
+    DataQualityReport,
     _validate_gate_bool,
     _validate_gate_ratio_threshold,
     _validate_gate_threshold,
@@ -1337,7 +1338,7 @@ def test_profile_exclude_columns_default_behavior(sample_csv):
 def test_profile_exclude_columns_valid_exclusion(tmp_path):
     path = tmp_path / "profile_exclude.csv"
     path.write_text(
-        "id,status,raw_payload\n" "1,active,{a}\n" "2,inactive,{b}\n" "3,active,{c}\n",
+        "id,status,raw_payload\n1,active,{a}\n2,inactive,{b}\n3,active,{c}\n",
         encoding="utf-8",
     )
 
@@ -1428,7 +1429,7 @@ def test_profile_exclude_columns_accepts_empty_list(sample_csv):
 def test_profile_exclude_columns_scopes_report_metrics_and_suggestions(tmp_path):
     path = tmp_path / "profile_scope.csv"
     path.write_text(
-        "id,score\n" "1,10\n" "1,10\n" "2,20\n",
+        "id,score\n1,10\n1,10\n2,20\n",
         encoding="utf-8",
     )
 
@@ -3997,16 +3998,16 @@ def test_data_quality_report_invariant_invalid_metrics():
 
 
 def test_cleaning_suggestion_is_exported():
-    assert hasattr(
-        ar, "CleaningSuggestion"
-    ), "CleaningSuggestion is missing from arnio.__init__ file"
+    assert hasattr(ar, "CleaningSuggestion"), (
+        "CleaningSuggestion is missing from arnio.__init__ file"
+    )
 
-    assert (
-        ar.CleaningSuggestion is CleaningSuggestion
-    ), "Top-level CleaningSuggestion does not match the internal type"
-    assert (
-        ar.CleaningSuggestion is CleaningSuggestion
-    ), "Top-level CleaningSuggestion does not match the internal type"
+    assert ar.CleaningSuggestion is CleaningSuggestion, (
+        "Top-level CleaningSuggestion does not match the internal type"
+    )
+    assert ar.CleaningSuggestion is CleaningSuggestion, (
+        "Top-level CleaningSuggestion does not match the internal type"
+    )
 
 
 # ── CleanStepRecord and CleanExplanation validation tests (Fixes #1687) ──────
@@ -4304,16 +4305,27 @@ def test_auto_clean_rejects_invalid_string_mode():
     with pytest.raises(ValueError, match="mode must be 'safe' or 'strict'"):
         ar.auto_clean(frame, mode="SAFE")
 
-def test_score_breakdown_defaults():
-    """Ensure score_breakdown returns expected structure and values."""
 
+def test_score_breakdown_with_real_values():
+    """Ensure score_breakdown correctly maps real penalty components and handles to_dict."""
+
+    # 1. Define real penalty numbers
+    real_components = {
+        "null_penalty": 0.15,
+        "duplicate_penalty": 0.25,
+        "type_mismatch_penalty": 0.35,
+    }
+
+    # 2. Pass them into your DataQualityReport (assuming it accepts score_components or similar argument)
     instance = DataQualityReport(
         row_count=100,
         column_count=5,
         memory_usage=1024,
         duplicate_rows=0,
         duplicate_ratio=0.0,
-        columns=["a", "b", "c", "d", "e"]
+        columns=["a", "b", "c", "d", "e"],
+        score_components=real_components,  # <--- Pass real values here
+        quality_score=0.85,  # <--- This will become your final_score
     )
 
     result = instance.score_breakdown()
@@ -4333,3 +4345,14 @@ def test_score_breakdown_defaults():
         assert key in result, f"Missing key: {key}"
         assert isinstance(result[key], (int, float)), f"{key} must be numeric"
         assert result[key] >= 0, f"{key} must be non-negative"
+
+    # 3. Explicitly assert the real component values are returned (Not 0.0)
+    assert result["null_penalty"] == 0.15
+    assert result["duplicate_penalty"] == 0.25
+    assert result["type_mismatch_penalty"] == 0.35
+    assert result["final_score"] == 0.85
+
+    # 4. Explicitly test to_dict() backward-compatibility assertion requested by reviewer
+    if hasattr(instance, "to_dict"):
+        exported_dict = instance.to_dict()
+        assert "type_mismatch_penalty" in exported_dict

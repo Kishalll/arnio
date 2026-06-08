@@ -1919,6 +1919,44 @@ def test_report_to_markdown_redacts_punctuation_confidence_reason():
     assert md.count("[REDACTED]") >= 3
 
 
+def test_report_to_markdown_redacts_short_name_without_substring_replacement():
+    report = ar.DataQualityReport(
+        row_count=1,
+        column_count=1,
+        memory_usage=64,
+        duplicate_rows=0,
+        duplicate_ratio=0.0,
+        quality_score=100.0,
+        score_components={},
+        columns={
+            "id": ar.ColumnProfile(
+                name="id",
+                dtype="string",
+                semantic_type="identifier",
+                row_count=1,
+                null_count=0,
+                null_ratio=0.0,
+                unique_count=1,
+                unique_ratio=1.0,
+                warnings=[],
+            ),
+        },
+        suggestions=[
+            ar.CleaningSuggestion(
+                "example",
+                {"column": "id"},
+                0.90,
+                "Candidate id is missing",
+            )
+        ],
+    )
+
+    md = report.to_markdown(exclude_columns=["id"])
+
+    assert "Candidate [REDACTED] is missing" in md
+    assert "Cand[REDACTED]ate" not in md
+
+
 def test_report_to_markdown_filters_tuple_and_set_suggestion_columns():
     report = ar.DataQualityReport(
         row_count=2,
